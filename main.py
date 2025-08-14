@@ -27,6 +27,13 @@ class GitUploader(QWidget):
         self.folder_btn.clicked.connect(self.select_folder)
         layout.addWidget(self.folder_btn)
 
+        # Usuário GitHub
+        self.user_label = QLabel("Usuário do GitHub:")
+        layout.addWidget(self.user_label)
+
+        self.user_input = QLineEdit()
+        layout.addWidget(self.user_input)
+
         # Link do repositório
         self.repo_label = QLabel("Link completo do repositório GitHub:")
         layout.addWidget(self.repo_label)
@@ -56,11 +63,15 @@ class GitUploader(QWidget):
 
     def export_to_github(self):
         source_dir = self.folder_input.text().strip()
+        username = self.user_input.text().strip()
         repo_url = self.repo_input.text().strip()
         token = self.token_input.text().strip()
 
         if not source_dir or not os.path.isdir(source_dir):
             QMessageBox.warning(self, "Erro", "Selecione uma pasta válida.")
+            return
+        if not username:
+            QMessageBox.warning(self, "Erro", "Informe o nome de usuário do GitHub.")
             return
         if not repo_url.startswith("https://"):
             QMessageBox.warning(self, "Erro", "Informe o link completo do repositório GitHub.")
@@ -73,27 +84,47 @@ class GitUploader(QWidget):
             temp_dir = tempfile.mkdtemp()
 
             # Copiar apenas arquivos .py preservando estrutura
+            arquivos_copiados = 0
             for root, dirs, files in os.walk(source_dir):
+                if "__pycache__" in root:
+                    continue
                 rel_path = os.path.relpath(root, source_dir)
                 target_dir = os.path.join(temp_dir, rel_path)
                 os.makedirs(target_dir, exist_ok=True)
                 for file in files:
                     if file.endswith(".py"):
                         shutil.copy2(os.path.join(root, file), target_dir)
+                        arquivos_copiados += 1
+
+            if arquivos_copiados == 0:
+                QMessageBox.warning(self, "Aviso", "Nenhum arquivo .py encontrado para exportar.")
+                return
 
             # Inicializar git se não existir
             if not os.path.exists(os.path.join(temp_dir, ".git")):
                 subprocess.run(["git", "init"], cwd=temp_dir, check=True)
 
-            # Adicionar remote
-            repo_with_token = repo_url.replace(
-                "https://", f"https://{token}@"
-            )
-            subprocess.run(["git", "remote", "remove", "origin"], cwd=temp_dir, stderr=subprocess.DEVNULL)
-            subprocess.run(["git", "remote", "add", "origin", repo_with_token], cwd=temp_dir, check=True)
+            # Configurar nome e email se não definidos
+            if not subprocess.run(["git", "config", "user.name"], cwd=temp_dir, capture_output=True, text=True).stdout.strip():
+                subprocess.run(["git", "config", "user.name", "Auto Commit"], cwd=temp_dir)
+            if not subprocess.run(["git", "config", "user.email"], cwd=temp_dir, capture_output=True, text=True).stdout.strip():
+                subprocess.run(["git", "config", "user.email", "auto@example.com"], cwd=temp_dir)
 
-            # Commit e push
+            # Montar URL com login
+            repo_with_auth = repo_url.replace("https://", f"https://{username}:{token}@")
+
+            # Adicionar remote (remove se existir)
+            subprocess.run(["git", "remote", "remove", "origin"], cwd=temp_dir, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "remote", "add", "origin", repo_with_auth], cwd=temp_dir, check=True)
+
+            # Adicionar e verificar se há mudanças
             subprocess.run(["git", "add", "."], cwd=temp_dir, check=True)
+            status = subprocess.run(["git", "status", "--porcelain"], cwd=temp_dir, capture_output=True, text=True)
+            if not status.stdout.strip():
+                QMessageBox.warning(self, "Aviso", "Nenhuma modificação para commit.")
+                return
+
+            # Commit e push (FORCE)
             subprocess.run(["git", "commit", "-m", "Export .py files"], cwd=temp_dir, check=True)
             subprocess.run(["git", "branch", "-M", "main"], cwd=temp_dir, check=True)
             subprocess.run(["git", "push", "-u", "origin", "main", "--force"], cwd=temp_dir, check=True)
